@@ -1,4 +1,9 @@
 #![no_std]
+#![deny(
+    missing_copy_implementations,
+    missing_debug_implementations,
+    missing_docs
+)]
 
 //! Display driver HAL.
 
@@ -19,10 +24,10 @@ impl Rotation {
     /// Returns the rotation in degrees.
     pub const fn degree(self) -> i32 {
         match self {
-            Rotation::Deg0 => 0,
-            Rotation::Deg90 => 90,
-            Rotation::Deg180 => 180,
-            Rotation::Deg270 => 270,
+            Self::Deg0 => 0,
+            Self::Deg90 => 90,
+            Self::Deg180 => 180,
+            Self::Deg270 => 270,
         }
     }
 
@@ -49,6 +54,16 @@ impl Rotation {
             Ok(r) => r,
             Err(_) => unreachable!(),
         }
+    }
+
+    /// Returns `true` if the rotation is horizontal (0° or 180°).
+    pub const fn is_horizontal(self) -> bool {
+        matches!(self, Self::Deg0 | Self::Deg180)
+    }
+
+    /// Returns `true` if the rotation is vertical (90° or 270°).
+    pub const fn is_vertical(self) -> bool {
+        matches!(self, Self::Deg90 | Self::Deg270)
     }
 }
 
@@ -81,6 +96,10 @@ pub struct InvalidAngleError;
 /// use display_driver_hal::{Orientation, Rotation};
 ///
 /// let orientation = Orientation::new().rotate(Rotation::Deg270).flip_vertical();
+///
+/// // Note that the order of operations is important:
+/// assert_ne!(orientation, Orientation::new().flip_vertical().rotate(Rotation::Deg270));
+/// assert_eq!(orientation, Orientation::new().flip_vertical().rotate(Rotation::Deg90));
 /// ```
 ///
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -108,19 +127,37 @@ impl Orientation {
         }
     }
 
-    /// Flips the orientation across the horizontal axis.
-    pub const fn flip_horizontal(self) -> Self {
+    /// Flips the orientation across the horizontal display axis.
+    const fn flip_horizontal_absolute(self) -> Self {
         Self {
             rotation: self.rotation,
             mirrored: !self.mirrored,
         }
     }
 
-    /// Flips the orientation across the vertical axis.
-    pub const fn flip_vertical(self) -> Self {
+    /// Flips the orientation across the vertical display axis.
+    const fn flip_vertical_absolute(self) -> Self {
         Self {
             rotation: self.rotation.rotate(Rotation::Deg180),
             mirrored: !self.mirrored,
+        }
+    }
+
+    /// Flips the orientation across the horizontal axis.
+    pub const fn flip_horizontal(self) -> Self {
+        if self.rotation.is_vertical() {
+            self.flip_vertical_absolute()
+        } else {
+            self.flip_horizontal_absolute()
+        }
+    }
+
+    /// Flips the orientation across the vertical axis.
+    pub const fn flip_vertical(self) -> Self {
+        if self.rotation.is_vertical() {
+            self.flip_horizontal_absolute()
+        } else {
+            self.flip_vertical_absolute()
         }
     }
 }
@@ -148,17 +185,17 @@ pub struct MemoryMapping {
 
 impl From<Orientation> for MemoryMapping {
     fn from(orientation: Orientation) -> Self {
-        let (reverse_rows, reverse_columns, swap_rows_and_columns) = match orientation.rotation {
-            Rotation::Deg0 => (false, false, false),
-            Rotation::Deg90 => (false, true, true),
-            Rotation::Deg180 => (true, true, false),
-            Rotation::Deg270 => (true, false, true),
+        let (reverse_rows, reverse_columns) = match orientation.rotation {
+            Rotation::Deg0 => (false, false),
+            Rotation::Deg90 => (false, true),
+            Rotation::Deg180 => (true, true),
+            Rotation::Deg270 => (true, false),
         };
 
         Self {
             reverse_rows,
             reverse_columns: reverse_columns ^ orientation.mirrored,
-            swap_rows_and_columns,
+            swap_rows_and_columns: orientation.rotation.is_vertical(),
         }
     }
 }
@@ -207,13 +244,13 @@ mod tests {
 
         for ((rotation, mirrored), (expected_rotation, expected_mirrored)) in [
             ((Deg0, false), (Deg0, true)),
-            ((Deg90, false), (Deg90, true)),
+            ((Deg90, false), (Deg270, true)),
             ((Deg180, false), (Deg180, true)),
-            ((Deg270, false), (Deg270, true)),
+            ((Deg270, false), (Deg90, true)),
             ((Deg0, true), (Deg0, false)),
-            ((Deg90, true), (Deg90, false)),
+            ((Deg90, true), (Deg270, false)),
             ((Deg180, true), (Deg180, false)),
-            ((Deg270, true), (Deg270, false)),
+            ((Deg270, true), (Deg90, false)),
         ]
         .into_iter()
         {
@@ -230,13 +267,13 @@ mod tests {
 
         for ((rotation, mirrored), (expected_rotation, expected_mirrored)) in [
             ((Deg0, false), (Deg180, true)),
-            ((Deg90, false), (Deg270, true)),
+            ((Deg90, false), (Deg90, true)),
             ((Deg180, false), (Deg0, true)),
-            ((Deg270, false), (Deg90, true)),
+            ((Deg270, false), (Deg270, true)),
             ((Deg0, true), (Deg180, false)),
-            ((Deg90, true), (Deg270, false)),
+            ((Deg90, true), (Deg90, false)),
             ((Deg180, true), (Deg0, false)),
-            ((Deg270, true), (Deg90, false)),
+            ((Deg270, true), (Deg270, false)),
         ]
         .into_iter()
         {
@@ -457,5 +494,19 @@ mod tests {
                 [4, 1, 0], //
             ]
         );
+    }
+
+    #[test]
+    fn equivalent_orientations() {
+        let o1 = Orientation::new().rotate(Rotation::Deg270).flip_vertical();
+        let o2 = Orientation::new().rotate(Rotation::Deg90).flip_horizontal();
+        let o3 = Orientation::new()
+            .flip_horizontal()
+            .rotate(Rotation::Deg270);
+        let o4 = Orientation::new().flip_vertical().rotate(Rotation::Deg90);
+
+        assert_eq!(o1, o2);
+        assert_eq!(o1, o3);
+        assert_eq!(o1, o4);
     }
 }
